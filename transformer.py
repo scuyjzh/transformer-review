@@ -879,18 +879,38 @@ class DecoderBlock(nn.Module):
 
         # 给 Decoder 的 自注意力层 attention1 准备 keys 和 values
         if state[2][self.i] is None:
-            # 训练阶段，输出序列的所有词元都在同一时间处理，
-            # state[2][self.i]初始化为None。
-            # 这时，key_values就是当前输入X，
-            # 表示每一层 DecoderBlock 都直接拿完整目标序列做 self-attention
+            # 如果当前层还没有历史缓存：
+            # 1. 训练阶段：通常一次性输入完整目标序列，此时缓存初始为 None
+            # 2. 预测阶段第一个时间步：还没有历史 token，也为 None
+            #
+            # 因此直接把当前输入 X 作为 key_values
+            # 训练时：X 是完整目标序列的表示，形状通常为 (batch_size, num_steps, hidden_dim)
+            # 预测第一个时间步：X 是当前 token 的表示，形状通常为 (batch_size, 1, hidden_dim)
             key_values = X
         else:
-            # 预测阶段，输出序列是通过词元一个接着一个解码的，每次只输入当前新 token,
-            # state[2][self.i]包含着直到当前时间步第i个块解码的输出表示。
-            # 这时，key_values是当前输入X和之前解码的输出表示（历史缓存）的拼接
+            # 如果当前层已经有历史缓存：
+            # 说明处于自回归预测阶段，并且已经生成过前面的 token
+            #
+            # state[2][self.i] 保存的是当前 DecoderBlock 之前时间步的输入表示
+            # X 是当前时间步新输入 token 的表示
+            #
+            # 沿着序列长度维度 axis=1 进行拼接：
+            # 历史 token 表示 + 当前 token 表示
+            #
+            # 拼接前：
+            # state[2][self.i].shape = (batch_size, 历史长度, hidden_dim)
+            # X.shape                = (batch_size, 1, hidden_dim)
+            #
+            # 拼接后：
+            # key_values.shape       = (batch_size, 历史长度 + 1, hidden_dim)
             key_values = torch.cat((state[2][self.i], X), axis=1)
 
-        # 更新当前层的历史缓存
+        # 更新当前 DecoderBlock 的历史缓存
+        # 这样下一次预测新 token 时，就可以继续使用之前已经生成 token 的表示
+        #
+        # 注意：这里缓存的是当前 block 的输入表示，
+        # 不是当前 block 完整计算后的输出。
+        # 它会在当前层 self-attention 中作为 key 和 value 的来源。
         state[2][self.i] = key_values
 
         if self.training:
